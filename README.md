@@ -1,1003 +1,667 @@
-# Lab 05: Directory Navigation — `cd`, `pwd`, `ls`
+# Lab: Directory Navigation — `cd`, `pwd`, `ls`
 
-**Series:** File Operations & Shell Fundamentals · **Lab 5 of the Novice → RHCA path**  
-**Certifications covered:** RHCSA EX200 (foundational), RHCE EX294 (every Ansible path reference), CKA (every kubelet/etcd/containerd path), RHCA building blocks (RH342 troubleshooting, RH358 services, RH236 storage)  
-**Prerequisite:** Lab 04 (Shell basics)  
-**Time Estimate:** 30–40 minutes  
-**Difficulty arc:** Tasks 1–6 foundation · 7–12 practical · 13–17 advanced · 18–20 exam-realistic
-
----
-
-## 🎯 Objective
-
-By the end of this lab you will move through the Linux filesystem with the same confidence a senior engineer does — without ever pausing to think "where am I?" or "what's in here?". Every other lab, every exam task, and every production troubleshooting session begins with these three commands.
+**Series:** linux-ops-mastery — RHCSA Essential Tools & File Operations
+**Subjects covered:** Filesystem-as-a-tree mental model, the FHS root layout, absolute vs. relative paths, the shortcut tokens `.`, `..`, `~`, `-`, `pwd` (logical vs. physical), `cd` (with `OLDPWD`/`PWD` env vars), `ls` long-listing, hidden files, time-sorted listings, recursive listings, and the universal habit "orient → list → move"
+**Career arcs covered:** RHCSA (every exam task gives you a path; you must reach it fast), RHCE (Ansible inventory/role/playbook paths), CKA (`/etc/kubernetes/*`, `/var/lib/kubelet`, `/var/log/pods`), SRE (incident triage starts with `cd /var/log && ls -ltr`), DevOps (project tree navigation, container working directories), AI/MLOps (model registry, dataset, checkpoint paths)
+**Prerequisite:** A working shell where you can type a command. No prior Linux knowledge required beyond "I can run `whoami`."
+**Time Estimate:** 30 to 45 minutes
+**Difficulty arc:** Task 1 foundation (`pwd`) · 2–3 absolute and relative paths · 4 `ls` long/hidden/time sorts · 5 shortcut tokens and the OLDPWD trick · 6 RHCSA exam-realistic capstone
 
 ---
 
-## 🧠 Concept: The Linux Filesystem Is a Tree
+## Objective
 
-Linux has a **single root directory**: `/`. Everything — every disk, every user file, every device, every kubelet manifest — lives under `/`. There are no drive letters like `C:\` or `D:\`.
+Move through the Linux filesystem with the same reflex as a senior engineer — without ever pausing to think *"where am I?"* or *"what's in here?"*. Every other lab, every exam task, and every production triage session begins with `pwd`, `ls -la`, and a deliberate `cd`. By the end of this lab those three commands are fingertip-speed reflexes and you understand the path language they speak.
+
+The capstone is an exam-realistic prompt: *"From your home directory, change to `/etc/ssh`, list every file (including hidden) with a long timestamp listing sorted by modification time, save that listing to `/root/sshd-tree.txt`, and return to your prior directory."*
+
+> **Lab safety note:** This lab is read-only on `/etc` and `/var`. Nothing modifies a system file. The only writes are to your home directory and `/tmp/nav-lab`.
+
+---
+
+## Concept: The Linux Filesystem Is One Tree
+
+Linux has **one root directory**: `/`. Every disk, every device, every user file, every config — everything — lives under `/`. There are no drive letters; there is no `C:\`. A mounted USB stick shows up at `/mnt/usb` or `/media/USERNAME/STICK`. A second hard drive shows up as a directory like `/data`. Everything is one tree.
 
 ```
-/                          ← root of everything
-├── bin/                   ← essential user binaries (ls, cp, mv)
-├── boot/                  ← kernel + bootloader
-├── dev/                   ← device files (disks, USB, terminals)
-├── etc/                   ← system configuration (sshd_config, fstab, kubernetes/)
-├── home/                  ← regular user home directories
-│   └── ec2-user/          ← YOUR home directory
-├── root/                  ← the root user's home (NOT the same as /)
-├── tmp/                   ← temporary files (often cleared on reboot)
-├── usr/                   ← installed software
-├── var/                   ← logs, spool, caches, kubelet data
-└── opt/                   ← optional/third-party software
+/                              ← root of EVERYTHING
+├── bin/        → /usr/bin     ← essential user binaries (ls, cp, mv, cat)
+├── boot/                      ← kernel + bootloader
+├── dev/                       ← device files (disks, USB, terminals)
+├── etc/                       ← system configuration (sshd_config, fstab, kubernetes/)
+├── home/                      ← regular user home directories
+│   └── ec2-user/              ← YOUR home directory ($HOME, ~)
+├── lib/        → /usr/lib     ← essential shared libraries
+├── proc/                      ← in-memory kernel state (process info)
+├── root/                      ← the root user's home (NOT the same as /)
+├── run/                       ← runtime state (PID files, sockets)
+├── sbin/       → /usr/sbin    ← system administration binaries
+├── srv/                       ← service data
+├── sys/                       ← in-memory kernel objects (sysfs)
+├── tmp/                       ← temporary files (often cleared on reboot)
+├── usr/                       ← installed software
+└── var/                       ← logs, spool, caches, kubelet data
 ```
 
-### Path types in one table
+The fact that the tree starts from a single root means **every file has exactly one absolute path** — a sequence of directory names joined by `/`, starting from `/`. `/etc/ssh/sshd_config` is the same file regardless of where you currently stand.
 
-| Type | Starts with | Example | Meaning |
-|---|---|---|---|
-| **Absolute** | `/` | `/etc/ssh/sshd_config` | Full path from root — works from anywhere |
-| **Relative** | not `/` | `ssh/sshd_config` | Path **from where you currently are** |
-| **Home** | `~` | `~/notes.txt` | Shortcut to your home directory |
-| **Parent** | `..` | `../logs` | Up one level, then into `logs` |
-| **Current** | `.` | `./script.sh` | Right here |
-
-> **Rule of thumb on every exam:** Use absolute paths when the task gives you one (e.g., `/var/tmp/file`). Use relative paths only when you are already deep in a directory and want to save typing.
+> **Why this matters:** Every RHCSA task starts *"in `/etc/foo` do X."* If you can `cd /etc/foo` and `ls` it in three seconds, you have already converted one minute of exam time into 57 seconds of solving. Multiply across 20 tasks.
 
 ---
 
-## 📚 Command Reference
+## 📜 Why `cd` / `pwd` / `ls` Exist — The Story
 
-| Command | Purpose | Critical flags |
+These three commands are older than the C programming language. They shipped in **Version 1 Unix (1971)**. The reason for that age is the reason they look the way they do.
+
+When Ken Thompson designed the first Unix shell, he had one driving constraint: the user is sitting at a teletype that prints **80 columns wide** and has no screen — once a line scrolls off, it is gone. He needed commands whose names were as short as possible, because every byte of `cd` was a byte you did not have to type on a slow mechanical keyboard.
+
+That is why:
+
+- `cd` — *change directory*. Two characters.
+- `pwd` — *print working directory*. Three characters.
+- `ls` — *list*. Two characters.
+
+These names are not abbreviations to make the syntax pretty. They are the **original minimum-typing** that survives because every operating system to come — including macOS, every Linux distro, every BSD, even WSL on Windows — copied them. The path language they share (the `/` separator, `..`, `~`, absolute vs. relative) is also from 1971 and is now universal.
+
+> **The point of the story:** When you learn these three commands you are not learning "shell tricks." You are learning the **lowest-level interface to the filesystem** that every Unix-derived OS in the world has agreed on for 55 years. There is no upgrade. There is no replacement. There is only fluency.
+
+---
+
+## 👪 The Navigation Family — Who Lives There
+
+`cd`, `pwd`, and `ls` are the trunk. A handful of close relatives matter just as much.
+
+### By job
+
+| Job | Command | Notes |
 |---|---|---|
-| `pwd` | **P**rint **W**orking **D**irectory — shows where you are | `-P` (physical/resolve symlinks), `-L` (logical, default) |
-| `cd` | **C**hange **D**irectory — moves you | `cd -` (previous), `cd ~user` (another user's home) |
-| `ls` | **L**i**S**t directory contents | `-l`, `-a`, `-A`, `-h`, `-R`, `-t`, `-S`, `-d`, `-1`, `-F`, `-i` |
+| Where am I? | `pwd` | Print working directory |
+| Go somewhere | `cd PATH` | Change directory |
+| Go home | `cd` or `cd ~` | Empty `cd` = `cd $HOME` |
+| Go to previous directory | `cd -` | Swap with `$OLDPWD` |
+| What is here? | `ls` | Bare listing |
+| What is here, in detail? | `ls -l` | Long listing |
+| Include hidden | `ls -a` | Show dotfiles |
+| Human-readable sizes | `ls -h` | KB, MB, GB |
+| Sort by modification time | `ls -lt` | Newest first |
+| Reverse the sort | `ls -ltr` | Oldest first (newest at bottom) |
+| Recursive listing | `ls -R` | Walk subtrees |
+| What is this thing? | `file PATH` | Identify file type |
+| Find a file | `find PATH -name PAT` | Recursive search (Lab 14) |
+
+### Path tokens
+
+| Token | Meaning | Example |
+|---|---|---|
+| `/` | The root of the tree | `/etc/passwd` |
+| `.` | Right here | `./script.sh` |
+| `..` | One level up | `cd ..` |
+| `~` | Your home directory | `cd ~/projects` |
+| `~user` | That user's home | `cd ~root` |
+| `-` (with cd) | The previous directory | `cd -` |
+
+### Path types
+
+| Type | Starts with | Example | Resolves to |
+|---|---|---|---|
+| **Absolute** | `/` | `/etc/ssh/sshd_config` | Same place from anywhere |
+| **Relative** | not `/` | `ssh/sshd_config` | Resolved against `$PWD` |
+| **Home-anchored** | `~` | `~/notes/today.md` | Resolved against `$HOME` |
+| **Parent-anchored** | `..` | `../sibling/file` | Up then over |
+| **Self-anchored** | `.` | `./script.sh` | This directory, then a name |
+
+> **The point of the family tree:** Three commands and five tokens cover 95% of navigation. The remaining 5% is `find`, `locate`, and `cd $(somecmd)`.
 
 ---
 
-## 🛣️ RHCA Pathway Sidebar
+## 🔬 The Anatomy of `ls -l` Output — In One Diagram
 
-| Cert level | Why this lab matters |
+```
+$ ls -l /etc/passwd
+-rw-r--r--. 1 root root 2547 May 21 14:33 /etc/passwd
+│ │  │  │  │ │   │    │    └────┬────┘    └────┬────┘
+│ │  │  │  │ │   │    │         │              └─ Path / name
+│ │  │  │  │ │   │    │         └─ Last modification time (date and time)
+│ │  │  │  │ │   │    └─ Size in bytes (use `-h` for K/M/G)
+│ │  │  │  │ │   └─ Group owner
+│ │  │  │  │ └─ User owner
+│ │  │  │  └─ Hard link count (1 = no aliases yet)
+│ │  │  └─ SELinux flag ('.' = has context; nothing = no context, '+' = has ACL)
+│ │  └─ "Other" permissions (anyone else)
+│ └─ "Group" permissions (members of the group owner)
+└─ File type + "User" permissions
+   - = regular file       d = directory       l = symlink
+   c = char device        b = block device    p = named pipe (FIFO)
+   s = socket
+```
+
+> **Reading rule:** Always read left-to-right and stop when you find what you need. `-` at column 1 = regular file. `d` at column 1 = directory. Permission triads `rwxrwxrwx` tell you who can read, write, execute. You will read this 10,000 times in your career.
+
+---
+
+## 📚 Navigation Reference Table
+
+| Task | Command | Notes |
+|---|---|---|
+| Print current path | `pwd` | Use `pwd -P` to resolve symlinks |
+| Change to absolute path | `cd /etc/ssh` | Works from anywhere |
+| Change to relative path | `cd config/sshd_config.d` | From `$PWD` |
+| Change to home | `cd` or `cd ~` | Empty = home |
+| Change to previous directory | `cd -` | Toggles with `$OLDPWD`; prints the new path |
+| Go up one level | `cd ..` | Repeat `..` for multiple levels |
+| Combine up and over | `cd ../sibling-dir` | Move up then sideways |
+| Show working directory in environment | `echo $PWD` | Set by `cd`; never edit manually |
+| Show previous directory in environment | `echo $OLDPWD` | The target of `cd -` |
+| Bare listing | `ls` | Names only |
+| Long listing | `ls -l` | Permissions, owner, size, time |
+| Long + hidden | `ls -la` | Includes dotfiles |
+| Human-readable | `ls -lh` | KB / MB / GB |
+| Sort by mtime, newest first | `ls -lt` | Recently changed at top |
+| Sort by mtime, oldest first | `ls -ltr` | Recently changed at bottom (better for tailing) |
+| Sort by size | `ls -lS` | Biggest first |
+| One file per line | `ls -1` | Scriptable output |
+| Append type indicators | `ls -F` | `/` = dir, `*` = exec, `@` = symlink |
+| Recursive listing | `ls -R` | Walk subtree |
+| Listing of a single dir, not its contents | `ls -ld DIR` | Treat dir as a file |
+| Single inode number | `ls -i` | Useful for hard-link debugging |
+
+> **Rule one of navigation:** When you sit down at any Linux shell, the first three commands you type are `whoami; pwd; ls`. Skip those and you will waste minutes troubleshooting "why doesn't this script find my file?"
+
+---
+
+## 🎯 Career Pathway Sidebar
+
+| Level | Why this lab matters |
 |---|---|
-| **Foundation** | The Linux Foundation, LFCS, and RHCSA all assume Day-1 fluency |
-| **RHCSA EX200** | Every graded task gives you a path — you must navigate to it |
-| **RHCE EX294** | Ansible inventories, playbooks, roles all reference paths |
-| **CKA** | `/etc/kubernetes/*`, `/var/lib/kubelet`, `/var/log/pods`, `/etc/cni/net.d` |
-| **RHCA — RH342 (Troubleshooting)** | "What changed recently?" → `ls -ltr /var/log` is move #1 |
-| **RHCA — RH358 (Services)** | Each service has a config directory you must learn to navigate fast |
-| **RHCA — RH236 (Storage)** | GlusterFS bricks, Ceph mounts — all under specific paths |
+| **RHCSA candidate** | Every graded task is path-specific. `cd /etc/ssh && ls -la` in three keystrokes is real exam time saved. |
+| **RHCE candidate** | Ansible roles assume the working dir is the role root; navigation reflex matters when debugging variable precedence. |
+| **CKA candidate** | `/etc/kubernetes/manifests`, `/var/lib/kubelet`, `/var/log/pods/*` — knowing the layout is half the troubleshooting. |
+| **SRE / Platform** | "What just changed in `/var/log`?" → `cd /var/log && ls -ltr` shows the newest file at the bottom in one second. |
+| **DevOps** | Build pipelines change `CWD` between steps; understanding `$PWD` and `cd -` keeps scripts portable. |
+| **AI / MLOps** | Datasets, checkpoints, logs, and configs each live under conventional paths (`/data`, `/scratch`, `/models`); fluent `cd` and `ls -ltr` make experiment management painless. |
 
 ---
 
-## 🔧 The 20 Tasks
+## 🔧 The 6 Tasks
 
-> Each task ends with three short callouts: **Switches** (every flag explained), **Output decoded** (every line/column explained), and **Troubleshoot** (what to do if it goes wrong).
+> Six exam-realistic phases that build the **orient → list → move → verify** habit.
 
 ---
 
-### Task 1 — Discover where you are with `pwd`
+### Task 1 — Orient yourself with `pwd` and the FHS
 
-**Purpose:** Before anything else, find out where you stand. Sysadmins call this "orienting yourself" — running `pwd` after `ssh`-ing into a server is a reflex.
+**Purpose:** Open a fresh shell, find out where the shell put you, and develop the reflex of "always know where you are before doing anything."
 
 ```bash
+whoami
 pwd
+echo "HOME=$HOME"
+echo "PWD=$PWD"
+ls /
+ls /etc | head -n 10
 ```
+
+**Human-Readable Breakdown:** Print the current user, the current directory, the value of `$HOME`, then inspect the FHS root and a sample of `/etc`. By the end you should know what the prompt's expected starting directory is.
+
+**Reading it left to right:** `whoami` prints your effective user. `pwd` prints the shell's current working directory. `$HOME` and `$PWD` are environment variables maintained by the shell. `ls /` shows the top-level FHS directories. `ls /etc | head -n 10` previews the most common configuration location.
+
+**The story:** Every senior engineer's first reflex after `ssh user@host` is `whoami; pwd`. It takes one second and tells you (a) who the shell thinks you are, and (b) where the shell put you — the two facts every subsequent command depends on.
 
 **Expected output:**
 
-```
+```text
+ec2-user
 /home/ec2-user
+HOME=/home/ec2-user
+PWD=/home/ec2-user
+bin   boot  dev  etc  home  lib  lib64  media  mnt  opt  proc  root  run  sbin  srv  sys  tmp  usr  var
+adjtime
+aliases
+alsa
+alternatives
+audit
+bash_completion.d
+bashrc
+bindresvport.blacklist
+binfmt.d
+chrony.conf
 ```
 
 **Switches**
 
 | Token | Meaning |
 |---|---|
-| `pwd` | **P**rint **W**orking **D**irectory — built-in shell command (also a binary at `/usr/bin/pwd`) |
-
-**Output decoded**
-
-| Line | What it tells you |
-|---|---|
-| `/home/ec2-user` | The **logical path** of your current shell — the chain of names you took to get here |
+| `whoami` | Print effective username |
+| `pwd` | Print working directory |
+| `pwd -P` | Resolve symlinks (physical path) |
+| `pwd -L` | Show the logical path including symlinks (default) |
+| `echo $VAR` | Print an env variable |
+| `head -n N` | First N lines |
 
 **Troubleshoot**
 
 | Symptom | Fix |
 |---|---|
-| `pwd: command not found` | You broke `$PATH` — type `/usr/bin/pwd` directly |
-| Output unexpected (e.g., `/`) | You probably `cd /` somewhere and forgot — proceed deliberately |
+| `pwd` printed a path with a tilde | Tilde is shell-display sugar — the real value of `$PWD` never has `~` |
+| `$HOME` differs from `pwd` | The shell launched in a different dir — `cd ~` to go home |
+| `ls /` is missing some entries | Modern RHEL has `/bin → /usr/bin`, `/sbin → /usr/sbin` symlinks |
 
 ---
 
-### Task 2 — Resolve symlinks with `pwd -P`
+### Task 2 — Use absolute paths to jump anywhere
 
-**Purpose:** When the path you see is a symbolic link, the **physical** location may be elsewhere. Container runtimes, GlusterFS bricks, and `/var/run` (often a symlink to `/run`) make this critical.
+**Purpose:** Practice `cd /path/to/anywhere` and prove that absolute paths work from any starting location.
 
 ```bash
-cd /var/run
+cd /
 pwd
-pwd -P
-```
+ls
 
-**Expected output:**
-
-```
-/var/run
-/run
-```
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| (none) | Default = `-L` = logical path (through symlinks) |
-| `-P` | **P**hysical path — resolves every symlink to the real directory |
-| `-L` | **L**ogical (default) — keep the chain of names you walked |
-
-**Output decoded**
-
-| Line | What it tells you |
-|---|---|
-| `/var/run` | What your shell thinks — looks like you're under `/var` |
-| `/run` | Where you actually are on disk — `/var/run` is a symlink to `/run` |
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| `pwd` and `pwd -P` always match | No symlinks in your path — that's fine, it's the common case |
-| You expected a symlink but `pwd -P` didn't change | The symlink may be lower in the tree — try `readlink -f $(pwd)` |
-
----
-
-### Task 3 — Move with an absolute path
-
-**Purpose:** Absolute paths always work from anywhere. The exam usually hands you one — never guess.
-
-```bash
-cd /etc
-pwd
-```
-
-**Expected output:**
-
-```
-/etc
-```
-
-**Switches**
-
-| Token | Meaning |
-|---|---|
-| `cd` | **C**hange **D**irectory — shell built-in (no separate binary exists) |
-| `/etc` | Absolute path — the leading `/` means "start from root" |
-
-**Output decoded**
-
-| Line | What it tells you |
-|---|---|
-| (silence after `cd`) | **Silence = success.** Almost every navigation command in Linux follows this rule |
-| `/etc` | `pwd` confirms the move succeeded |
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| `bash: cd: /etc: Permission denied` | The directory exists but you lack execute (`x`) on it — try `sudo` for the inspection, or pick a different parent |
-| `bash: cd: /eyc: No such file or directory` | Typo — tab-complete: type `cd /e` then Tab |
-
----
-
-### Task 4 — Move with a relative path
-
-**Purpose:** You can save typing by referencing what's near you instead of repeating the full path. This is how scripts that "just work in their own directory" do it.
-
-```bash
-cd ssh
-pwd
-```
-
-(You should still be in `/etc` from Task 3.)
-
-**Expected output:**
-
-```
-/etc/ssh
-```
-
-**Switches**
-
-| Token | Meaning |
-|---|---|
-| `cd` | Change directory |
-| `ssh` | Relative path — no leading `/`, so the shell appends it to your current location |
-
-**Output decoded**
-
-| Line | What it tells you |
-|---|---|
-| `/etc/ssh` | `pwd` shows the shell appended `ssh` to your prior `/etc` location |
-
-**Why a sysadmin needs this:** Configuration directories (`/etc/ssh`, `/etc/httpd`, `/etc/kubernetes`) all sit inside `/etc`. Walking into `/etc` once and then using relative `cd` is faster than typing the full path each time.
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| `bash: cd: ssh: No such file or directory` | You're not where you thought — run `pwd` then try again |
-
----
-
-### Task 5 — Move up one level with `..`
-
-**Purpose:** `..` always means "the parent directory." It's how you back out without retyping the entire path.
-
-```bash
 cd /etc/ssh
+pwd
+ls
+
+cd /var/log
+pwd
+ls -ltr | tail -n 5
+```
+
+**Human-Readable Breakdown:** Jump to `/`, list it. Jump to `/etc/ssh`, list it. Jump to `/var/log`, list the five most recently modified entries (the `-ltr` long-time-reverse trick).
+
+**Reading it left to right:** Each `cd /path` is unambiguous: starts at root, traverses by name, lands at the target. `pwd` confirms. `ls` shows the contents. `ls -ltr` sorts by mtime ascending so the newest file is at the bottom of the output — perfect for spotting "what changed last."
+
+**The story:** Absolute paths are the safe default. They produce the same result regardless of where you currently stand. Relative paths are convenient for short hops in the same directory, but a script that uses relative paths will silently break the moment somebody runs it from the wrong working directory.
+
+**Expected output:**
+
+```text
+/
+bin   boot  dev  etc  home  lib  lib64  ...
+/etc/ssh
+ssh_config         ssh_config.d       sshd_config       sshd_config.d
+ssh_host_ecdsa_key ssh_host_ed25519_key ...
+/var/log
+-rw------- 1 root root  ... May 26 12:48 messages
+-rw-r--r-- 1 root root  ... May 26 12:48 dnf.log
+-rw-r----- 1 root root  ... May 26 12:48 secure
+-rw-r--r-- 1 root root  ... May 26 12:48 wtmp
+-rw-r----- 1 root root  ... May 26 12:48 audit
+```
+
+**Switches**
+
+| Token | Meaning |
+|---|---|
+| `cd /` | Go to root |
+| `cd /etc/ssh` | Go to a deep path absolutely |
+| `ls -ltr` | Long, sorted by mtime, oldest at top → newest at bottom |
+| `tail -n N` | Last N lines |
+
+**Troubleshoot**
+
+| Symptom | Fix |
+|---|---|
+| `cd: /etc/ssh: No such file or directory` | Typo — `ls /etc/` to confirm the spelling |
+| `Permission denied` listing `/root` | Only root can read it — `sudo ls /root` |
+| `ls` shows nothing in `/var/log` | You are not in `/var/log` — `pwd` |
+
+---
+
+### Task 3 — Use relative paths and the shortcut tokens
+
+**Purpose:** Practice `.`, `..`, `~`, and `cd -` so short hops in the filesystem take one keystroke instead of typing a full path.
+
+```bash
+mkdir -p /tmp/nav-lab/a/b/c
+cd /tmp/nav-lab/a/b/c
+pwd
+
 cd ..
 pwd
-cd ../var/log
+
+cd ../..
 pwd
+
+cd .
+pwd
+
+cd ~
+pwd
+
+cd -
+pwd
+
+cd /tmp/nav-lab
+ls -F
 ```
+
+**Human-Readable Breakdown:** Build a deep test tree, navigate down to the leaf, walk back up with `..`, prove `.` does nothing, jump home with `cd ~`, then bounce back with `cd -`. Finally, list the tree with `-F` to see directory markers.
+
+**Reading it left to right:** `mkdir -p` makes every missing parent. `cd ..` goes one level up. `cd ../..` two levels. `cd .` stays put. `cd ~` jumps home. `cd -` swaps the shell between `$PWD` and `$OLDPWD` — your fastest "bounce back" toggle.
+
+**The story:** `cd -` is the single most underused shortcut in Linux. Senior engineers do most navigation as a ping-pong between two directories — say, a project source tree and `/var/log`. `cd -` toggles between them with one keypress and prints the new directory each time. Learn it once, save it for life.
 
 **Expected output:**
 
-```
-/etc
-/var/log
+```text
+/tmp/nav-lab/a/b/c
+/tmp/nav-lab/a/b
+/tmp/nav-lab
+/tmp/nav-lab
+/home/ec2-user
+/tmp/nav-lab
+/tmp/nav-lab
+a/
 ```
 
 **Switches**
 
 | Token | Meaning |
 |---|---|
-| `..` | Parent of the current directory |
-| `../..` | Two levels up |
-| `../var/log` | Up one level from `/etc/ssh` to `/etc`, then down into `/etc`'s sibling `/var/log` |
-
-**Output decoded**
-
-| Line | What it tells you |
-|---|---|
-| `/etc` | After `cd ..` from `/etc/ssh`, you landed in the parent |
-| `/var/log` | From `/etc`, `cd ../var/log` went up to `/` then down through `var/log` |
-
-**Why a sysadmin needs this:** When debugging, you often want to jump from `/etc/httpd/conf.d` to `/var/log/httpd` — `cd ../../../var/log/httpd` is faster than retyping.
+| `mkdir -p P/Q/R` | Make all missing parents |
+| `cd ..` | Up one level |
+| `cd ../..` | Up two levels |
+| `cd .` | Here (no-op) |
+| `cd ~` | Home |
+| `cd -` | Toggle to `$OLDPWD`; prints new path |
+| `ls -F` | Append type markers (`/` for dir) |
 
 **Troubleshoot**
 
 | Symptom | Fix |
 |---|---|
-| You end up at `/` | You used `..` one too many times — `cd` somewhere known: `cd ~` |
+| `cd: too many arguments` | You wrote `cd ../..` (good) but with a stray space turning it into `cd .. ..` |
+| `cd -` errors with `OLDPWD not set` | First-ever `cd` in this shell — make any other `cd` first |
+| `~bob` does not expand | The user `bob` does not exist |
 
 ---
 
-### Task 6 — Go home three different ways
+### Task 4 — Inspect with `ls -l`, hidden files, and time sorts
 
-**Purpose:** Every shell session has a "home" directory. Knowing all three ways to get there saves keystrokes and recovers you from any mess.
-
-```bash
-cd /etc
-cd ~
-pwd
-cd /tmp
-cd
-pwd
-cd /var
-cd $HOME
-pwd
-```
-
-**Expected output:**
-
-```
-/home/ec2-user
-/home/ec2-user
-/home/ec2-user
-```
-
-**Switches / tokens**
-
-| Token | Meaning |
-|---|---|
-| `~` | Tilde — shell shorthand for `$HOME` |
-| (no arg) | `cd` with no argument also goes home |
-| `$HOME` | Environment variable holding your home path |
-
-**Output decoded**
-
-| Line | What it tells you |
-|---|---|
-| Each `/home/ec2-user` | All three idioms produce identical results |
-
-**Why a sysadmin needs this:** During an emergency, `cd` (no args) is the fastest "panic button" — it always lands you somewhere safe.
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| `cd ~user` says `No such user` | Username typo or the user doesn't exist on the system |
-| `$HOME` is empty | Environment is broken — log out and back in |
-
----
-
-### Task 7 — Toggle between two directories with `cd -`
-
-**Purpose:** `cd -` swaps you back to your previous directory. Indispensable when bouncing between two locations.
+**Purpose:** Read the long-listing output, surface hidden files, and use time-sorted listings to find what changed recently.
 
 ```bash
-cd /var/log
 cd /etc/ssh
-cd -
-pwd
-cd -
-pwd
-```
-
-**Expected output:**
-
-```
-/var/log
-/var/log
-/etc/ssh
-/etc/ssh
-```
-
-**Switches**
-
-| Token | Meaning |
-|---|---|
-| `cd -` | Move to `$OLDPWD` (the directory you were in **before** the last `cd`) |
-
-**Output decoded**
-
-| Line | What it tells you |
-|---|---|
-| `/var/log` (first time) | The shell **echoes** the destination it just moved to |
-| `/var/log` (second time) | `pwd` confirms |
-| `/etc/ssh` | Toggled back — `cd -` is a flip-flop, not a stack |
-
-**Why a sysadmin needs this on CKA:** Reproducible — you bounce between `/etc/kubernetes/manifests` (manifests) and `/var/log/pods` (logs) every other command.
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| `bash: cd: OLDPWD not set` | This is your first `cd` in this session — do another `cd` first |
-
----
-
-### Task 8 — Visit another user's home with `~user`
-
-**Purpose:** The `~user` form expands to that user's home directory. Useful for inspecting service accounts (`apache`, `nginx`, `postgres`).
-
-```bash
-cd ~root 2>/dev/null && pwd
-cd /home && ls -d ~$(whoami)
-```
-
-**Expected output (on most systems):**
-
-```
-bash: cd: /root: Permission denied
-/home/ec2-user
-```
-
-**Switches**
-
-| Token | Meaning |
-|---|---|
-| `~root` | Expands to root's home directory (`/root`) |
-| `~$(whoami)` | Expands to **your own** home — `$(whoami)` substitutes your username first |
-| `2>/dev/null` | Suppress the permission-denied stderr |
-
-**Output decoded**
-
-| Line | What it tells you |
-|---|---|
-| `Permission denied` | Expected — non-root users can't enter `/root` |
-| `/home/ec2-user` | Your home, shown by `ls -d` |
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| `bash: cd: ~admin: No such file or directory` | The user has no home directory yet — `sudo useradd -m admin` to give them one |
-
----
-
-### Task 9 — List with plain `ls`
-
-**Purpose:** See what's in a directory. The default is alphabetical, multi-column, and **hides files starting with `.`**.
-
-```bash
-cd /etc
 ls
-```
+ls -l
+ls -la
+ls -lha
 
-**Expected output (truncated):**
-
-```
-adjtime         centos-release  chrony.conf   crypttab    ec2_version  ...
-alternatives    chkconfig.d     cron.d        dbus-1      environment
-audit           chrony.keys     cron.daily    default     ethertypes
-```
-
-**Switches**
-
-| Token | Meaning |
-|---|---|
-| `ls` | List — no flags = short, colored, multi-column, no dotfiles |
-
-**Output decoded**
-
-| Element | Meaning |
-|---|---|
-| Each name | A file or directory inside `/etc` |
-| Colors (if enabled) | Blue = directory, green = executable, cyan = symlink, white = regular file |
-| Sort order | Alphabetical, case-insensitive on GNU `ls` |
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| No colors | Your shell may not be passing `--color=auto` — set `alias ls='ls --color=auto'` in `~/.bashrc` |
-
----
-
-### Task 10 — Reveal hidden files with `ls -a`
-
-**Purpose:** Configuration files in your home directory start with `.` — `.bashrc`, `.ssh/`, `.kube/`. Without `-a`, you don't see them.
-
-```bash
-cd ~
-ls -a
-```
-
-**Expected output:**
-
-```
-.   ..   .bash_history   .bash_logout   .bash_profile   .bashrc   .ssh
-```
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| `-a` | **A**ll — include entries beginning with `.` |
-
-**Output decoded**
-
-| Entry | Meaning |
-|---|---|
-| `.` | The current directory itself (every dir contains a reference to itself) |
-| `..` | The parent directory |
-| `.bash_history` | Log of your previous bash commands |
-| `.bashrc` | Per-shell startup config |
-| `.ssh` | Directory containing SSH keys and `known_hosts` |
-
-**Why a sysadmin needs this on CKA:** `~/.kube/config` is hidden. Without `-a`, beginners panic that their kubeconfig is "missing."
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| `.` and `..` clutter scripts | Use `-A` (Task 11) instead |
-
----
-
-### Task 11 — "Almost all" with `ls -A`
-
-**Purpose:** Same as `-a` but excludes `.` and `..`. Use this in scripts so you don't accidentally process the current and parent directories.
-
-```bash
-cd ~
-ls -A
-```
-
-**Expected output:**
-
-```
-.bash_history   .bash_logout   .bash_profile   .bashrc   .ssh
-```
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| `-A` | **A**lmost all — include dotfiles, exclude `.` and `..` |
-
-**Output decoded**
-
-| Entry | Meaning |
-|---|---|
-| Same as Task 10 minus `.` and `..` | Cleaner list for piping into other commands |
-
-**Why a sysadmin needs this:** Running `for f in $(ls -a)` would loop over `.` and `..` — disaster. Use `-A`.
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| Confused which to use | Rule: humans → `-a`, scripts → `-A` |
-
----
-
-### Task 12 — Read the long listing with `ls -l`
-
-**Purpose:** The most important `ls` flag. Shows type, permissions, owner, group, size, mtime, name. This is where every "is this file set up correctly?" question gets answered.
-
-```bash
-ls -l /etc/passwd /etc/ssh
-```
-
-**Expected output:**
-
-```
--rw-r--r--. 1 root root 2876 Sep  3 10:42 /etc/passwd
-/etc/ssh:
-total 612
--rw-r-----. 1 root ssh_keys  492 Mar 14  2024 moduli
--rw-r--r--. 1 root root      577 Mar 14  2024 ssh_config
-drwxr-xr-x. 2 root root        6 Mar 14  2024 ssh_config.d
--rw-------. 1 root root     4096 Mar 14  2024 sshd_config
-drwxr-xr-x. 2 root root       40 Mar 14  2024 sshd_config.d
-```
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| `-l` | **L**ong listing — full metadata, one entry per line |
-
-**Output decoded — every column of `-rw-r--r--. 1 root root 2876 Sep  3 10:42 /etc/passwd`**
-
-| Column | Value | Meaning |
-|---|---|---|
-| 1 (chars 1) | `-` | File type (`-` regular, `d` dir, `l` symlink, `c`/`b` device, `s` socket, `p` pipe) |
-| 1 (chars 2–4) | `rw-` | Owner permissions (read, write, no execute) |
-| 1 (chars 5–7) | `r--` | Group permissions (read only) |
-| 1 (chars 8–10) | `r--` | Other permissions (read only) |
-| 1 (char 11) | `.` | Has SELinux context (`+` would mean ACL, none = neither) |
-| 2 | `1` | Hard link count |
-| 3 | `root` | Owning user |
-| 4 | `root` | Owning group |
-| 5 | `2876` | Size in **bytes** |
-| 6 | `Sep 3 10:42` | Last modification timestamp |
-| 7 | `/etc/passwd` | The name |
-| `total 612` (in dir listing) | Sum of disk blocks (in 1 KiB units) used by listed files |
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| Size in bytes is hard to read | Add `-h` (Task 13) |
-| `total` confuses you | Ignore unless doing disk-usage forensics — it's not file count |
-
----
-
-### Task 13 — Human-readable sizes with `-h`
-
-**Purpose:** When sizes get big (MB, GB), raw bytes become unreadable. `-h` adds units.
-
-```bash
-ls -lh /var/log/messages /var/log/wtmp /var/log/lastlog
-```
-
-**Expected output:**
-
-```
--rw-------. 1 root root  3.2M Sep 10 08:15 /var/log/messages
--rw-rw-r--. 1 root utmp  4.2K Sep 10 08:15 /var/log/wtmp
--rw-r--r--. 1 root root  1.2M Sep 10 08:15 /var/log/lastlog
-```
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| `-l` | Long listing |
-| `-h` | **H**uman-readable sizes (`K` = 1024, `M` = 1024², `G` = 1024³) |
-
-**Output decoded**
-
-| Token | Meaning |
-|---|---|
-| `3.2M` | ~3.2 megabytes (3,355,443 bytes) |
-| `4.2K` | ~4.2 kilobytes |
-| `1.2M` | ~1.2 megabytes |
-
-**Variants to know**
-
-| Flag | Meaning |
-|---|---|
-| `-h` | Binary units (1K = 1024) |
-| `--si` | SI units (1K = 1000) — useful for matching marketing specs |
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| `-h` does nothing | It only works **with** `-l` or `-s` — combine them |
-
----
-
-### Task 14 — Show the directory itself with `-d`
-
-**Purpose:** Without `-d`, `ls -l /etc` dumps the contents. With `-d`, you see only `/etc`'s own metadata. Critical for verifying directory permissions.
-
-```bash
-ls -ld /etc /home /tmp
-```
-
-**Expected output:**
-
-```
-drwxr-xr-x. 145 root     root      8192 Sep 10 09:00 /etc
-drwxr-xr-x.   4 root     root        37 Aug 12 10:00 /home
-drwxrwxrwt.  18 root     root       420 Sep 10 09:30 /tmp
-```
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| `-l` | Long listing |
-| `-d` | List **d**irectory entries themselves, not contents |
-
-**Output decoded**
-
-| Token | Meaning |
-|---|---|
-| `drwxr-xr-x.` | Directory, owner full, group read+execute, other read+execute |
-| `drwxrwxrwt.` | The `t` at the end = **sticky bit** — anyone can create in `/tmp` but only the file owner can delete |
-| `145` | `/etc` contains 145 directory entries (including `.` and `..`) reflected in its link count |
-
-**Why a sysadmin needs this:** Exam task: "Create `/foo` with mode 0750, owner alice, group developers." Verify with `ls -ld /foo`.
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| You see contents instead of metadata | You forgot `-d` — `ls -l` of a directory descends into it |
-
----
-
-### Task 15 — Sort by time with `-t`, reverse with `-r`
-
-**Purpose:** "What changed recently?" is the #1 troubleshooting question. `ls -ltr` puts newest at the **bottom** — where your eyes naturally land.
-
-```bash
-ls -lt /var/log | head -5
-ls -ltr /var/log | tail -5
-```
-
-**Expected output (first command — newest at top):**
-
-```
-total 5240
--rw-------. 1 root   root      8132 Sep 10 09:30 secure
--rw-------. 1 root   root    314722 Sep 10 09:25 messages
--rw-rw-r--. 1 root   utmp      4224 Sep 10 09:00 wtmp
--rw-------. 1 root   root      1024 Sep 10 08:00 audit/audit.log
-```
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| `-l` | Long listing |
-| `-t` | Sort by modification **t**ime, newest first |
-| `-r` | **R**everse — flip the sort |
-| `\| head -5` | Show only top 5 lines |
-| `\| tail -5` | Show only last 5 lines |
-
-**Output decoded**
-
-| Token | Meaning |
-|---|---|
-| `total 5240` | Sum of blocks (1 KiB units) |
-| Each row | A log file, with mtime visible in column 6 |
-| Order | Newest file on top (`-t`) — flipped if you add `-r` |
-
-**Why on RHCA RH342:** Troubleshooting after a crash: `ls -ltr /var/log | tail -10` shows the last few log files that were touched — often the smoking gun.
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| All times look the same | Files updated within the same second — add `--full-time` for sub-second precision |
-
----
-
-### Task 16 — Sort by size with `-S` and find the biggest
-
-**Purpose:** Disk full? `ls -lS` shows the giants first.
-
-```bash
-ls -lhS /var/log | head -5
-```
-
-**Expected output:**
-
-```
-total 5.2M
--rw-------. 1 root  root   3.2M Sep 10 09:25 messages
--rw-------. 1 root  root   1.2M Sep 10 08:15 lastlog
--rw-------. 1 root  root   600K Sep 10 09:30 secure
--rw-r--r--. 1 root  root   105K Sep  9 10:00 dnf.log
-```
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| `-l` | Long listing |
-| `-h` | Human-readable sizes |
-| `-S` | Sort by **S**ize, largest first |
-
-**Output decoded**
-
-| Token | Meaning |
-|---|---|
-| First row | The largest file in the directory |
-| Subsequent rows | Descending size order |
-
-**Why a sysadmin needs this:** Pair with `du -sh */ \| sort -h` for directories. RHCSA Task 11 (tar): you need to know which logs are big enough to bother archiving.
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| Wanted smallest first | Add `-r`: `ls -lShr` |
-
----
-
-### Task 17 — Recursive listing with `-R` (carefully)
-
-**Purpose:** Walk into every subdirectory. Useful for auditing a small tree; **dangerous** at high levels.
-
-```bash
-ls -R /etc/ssh
-```
-
-**Expected output:**
-
-```
-/etc/ssh:
-moduli  ssh_config  ssh_config.d  sshd_config  sshd_config.d
-
-/etc/ssh/ssh_config.d:
-05-redhat.conf
-
-/etc/ssh/sshd_config.d:
-50-redhat.conf
-```
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| `-R` | **R**ecursive — descend into every subdirectory |
-
-**Output decoded**
-
-| Element | Meaning |
-|---|---|
-| `/etc/ssh:` | Header — the directory whose contents follow |
-| Items below | Names inside that directory |
-| Blank line | Separator between directories |
-
-> ⚠️ **Never run `ls -R /`** — it tries to list the entire filesystem.
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| Wall of text | Pipe to `less` or restrict with `find /etc/ssh -maxdepth 2` |
-
----
-
-### Task 18 — One per line with `-1` and classify with `-F`
-
-**Purpose:** Script-friendly output; visual cues for file types.
-
-```bash
-ls -1F /etc/ssh
-ls /etc | wc -l
-```
-
-**Expected output:**
-
-```
-moduli
-ssh_config
-ssh_config.d/
-sshd_config
-sshd_config.d/
-```
-
-(`wc -l` returns a number — e.g., `184`.)
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| `-1` | One entry per **line** |
-| `-F` | Classify — append a character indicating type |
-| `\| wc -l` | Count lines |
-
-**Classification suffixes from `-F`**
-
-| Suffix | Meaning |
-|---|---|
-| `/` | Directory |
-| `*` | Executable file |
-| `@` | Symbolic link |
-| `=` | Socket |
-| `\|` | FIFO/named pipe |
-| (none) | Regular file |
-
-**Output decoded**
-
-| Token | Meaning |
-|---|---|
-| `ssh_config.d/` | The trailing `/` says: this is a directory |
-| `wc -l` output | Total number of entries (counts dotfiles only if you used `ls -A`) |
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| Want only the count | `ls -1A /path \| wc -l` is the idiom |
-
----
-
-### Task 19 — Inode numbers with `-i`
-
-**Purpose:** Inodes are the disk-level identity of a file. `-i` reveals the inode number, which is essential when working with hard links (Lab 09) or recovering files by inode.
-
-```bash
-ls -li /etc/passwd /etc/shadow
-```
-
-**Expected output:**
-
-```
-4456 -rw-r--r--. 1 root root 2876 Sep  3 10:42 /etc/passwd
-4457 -rw-------. 1 root root 1432 Sep  3 10:42 /etc/shadow
-```
-
-**Switches**
-
-| Flag | Meaning |
-|---|---|
-| `-l` | Long listing |
-| `-i` | Show **i**node number (first column) |
-
-**Output decoded**
-
-| Token | Meaning |
-|---|---|
-| `4456` | Inode number for `/etc/passwd` — unique per filesystem |
-| `4457` | Inode for `/etc/shadow` — different number = different file |
-
-**Why a sysadmin needs this:** If `find / -inum 4456` returns more than one path, those paths are hard links to the same file.
-
-**Troubleshoot**
-
-| Symptom | Fix |
-|---|---|
-| Inode numbers very large (millions) | Normal on big filesystems — they're not file sizes |
-
----
-
-### Task 20 — Exam-style scenario: combine everything
-
-**Task statement (RHCSA-style):** *"In `/var/log`, identify the three most recently modified files, confirm `/var/log/messages` exists and is owned by root, then return to your prior directory."*
-
-```bash
 cd /var/log
+ls -ltr | head -n 10
+ls -ltr | tail -n 5
+
+cd ~
+touch test1.txt && touch test2.txt
+ls -lt | head -n 5
+rm test1.txt test2.txt
+```
+
+**Human-Readable Breakdown:** List `/etc/ssh` plain, then long, then long + hidden, then long + hidden + human sizes. Then in `/var/log` find the oldest and newest files via `-ltr`. Finally create two test files in your home dir and watch them appear at the top of `-lt`.
+
+**Reading it left to right:** Each `ls` flag adds one dimension: `-l` adds permissions / owner / size / time. `-a` adds hidden files. `-h` makes sizes human-readable. `-t` sorts by mtime, `-r` reverses. `touch` creates an empty file and updates its mtime; `-lt` shows newest first.
+
+**The story:** Long listings are how Linux exposes the metadata that matters: who owns what, when was it last changed, how big is it. Senior engineers read `ls -l` faster than English; you can too, with practice.
+
+**Expected output:**
+
+```text
+ssh_config  ssh_config.d  sshd_config  sshd_config.d  ssh_host_ecdsa_key ...
+-rw-r--r--. 1 root root 1872 May 21 14:33 ssh_config
+drwxr-xr-x. 2 root root  175 May 21 14:33 ssh_config.d
+-rw-------. 1 root root 4434 May 21 14:33 sshd_config
+...
+total 24
+drwxr-xr-x.  4 root root   80 May 21 14:33 .
+drwxr-xr-x. 89 root root 8192 May 26 12:48 ..
+-rw-r--r--.  1 root root 1872 May 21 14:33 ssh_config
+-rw-------.  1 root root 4434 May 21 14:33 sshd_config
+...
+total 24K
+... 1.9K May 21 14:33 ssh_config
+...
+-rw-r--r-- 1 root root      0 May  1 03:21 oldest.log
+...
+-rw-r--r-- 1 root root  41234 May 26 12:48 dnf.log
+-rw------- 1 root root 102433 May 26 12:48 messages
+-rw-r----- 1 root root  41922 May 26 12:48 secure
+...
+total 16
+-rw-r--r--. 1 ec2-user ec2-user    0 May 26 13:11 test2.txt
+-rw-r--r--. 1 ec2-user ec2-user    0 May 26 13:11 test1.txt
+drwxr-xr-x. 4 ec2-user ec2-user  117 May 26 13:11 .
+...
+```
+
+**Switches**
+
+| Token | Meaning |
+|---|---|
+| `ls -l` | Long listing |
+| `ls -a` | Include `.` and `..` and hidden files |
+| `ls -h` | Human-readable sizes |
+| `ls -t` | Sort by mtime, newest first |
+| `ls -r` | Reverse sort |
+| `ls -F` | Add type indicators |
+| `touch FILE` | Create / update mtime |
+| `rm FILE` | Remove file (Lab 11) |
+
+**Troubleshoot**
+
+| Symptom | Fix |
+|---|---|
+| `ls` does not show your dotfile | Use `ls -a` |
+| Sizes shown as huge raw bytes | Add `-h` |
+| Order looks alphabetical, not by time | Add `-t` |
+| Want the oldest first instead of newest | Add `-r` to make `-ltr` |
+
+---
+
+### Task 5 — Recursive listings, single-directory listings, and the `$OLDPWD` trick
+
+**Purpose:** Use `ls -R` to walk a subtree, `ls -ld` to inspect a directory's metadata (not its contents), and chain `cd -` between two working directories for fast bouncing.
+
+```bash
+cd /tmp/nav-lab
+mkdir -p src/{app,lib,tests} build/{debug,release}
+touch src/app/main.c src/lib/util.c src/tests/test_main.c
+touch build/debug/output.log build/release/output.log
+
+ls -R
+ls -ld src
+ls -ld src/app
+ls -ld /etc /etc/ssh
+
+cd src
 pwd
-ls -ltrh | tail -3
-ls -ld /var/log/messages
-stat -c '%U %G %a %n' /var/log/messages
+cd /etc/ssh
+pwd
+cd -
+pwd
 cd -
 pwd
 ```
 
+**Human-Readable Breakdown:** Build a multi-level project tree with brace expansion, walk the whole tree with `-R`, inspect each directory's own metadata with `-ld`, then bounce between two unrelated locations with `cd -`.
+
+**Reading it left to right:** `mkdir -p src/{app,lib,tests}` creates three directories in one command (brace expansion). `ls -R` recurses into every subdir. `ls -ld DIR` shows DIR's permissions/owner/size/time **as a single line** rather than listing its contents. `cd -` toggles between `$PWD` and `$OLDPWD`.
+
+**The story:** `ls -R` is the cheap-and-easy tree visualizer. `ls -ld` is critical when debugging "why can't user X enter this directory" — you need the directory's own permissions, not the contents. `cd -` is the senior engineer's project-vs-logs ping-pong.
+
 **Expected output:**
 
+```text
+.:
+build  src
+
+./build:
+debug  release
+
+./build/debug:
+output.log
+
+./build/release:
+output.log
+
+./src:
+app  lib  tests
+...
+drwxr-xr-x. 5 ec2-user ec2-user 36 May 26 13:13 src
+drwxr-xr-x. 2 ec2-user ec2-user 22 May 26 13:13 src/app
+drwxr-xr-x. 89 root root 8192 May 26 12:48 /etc
+drwxr-xr-x. 4 root root  175 May 21 14:33 /etc/ssh
+/tmp/nav-lab/src
+/etc/ssh
+/tmp/nav-lab/src
+/etc/ssh
 ```
-/var/log
--rw-r--r--. 1 root root  105K Sep  9 10:00 dnf.log
--rw-------. 1 root root  600K Sep 10 09:30 secure
--rw-------. 1 root root  3.2M Sep 10 09:35 messages
--rw-------. 1 root root 3258880 Sep 10 09:35 /var/log/messages
-root root 600 /var/log/messages
-/home/ec2-user
-/home/ec2-user
-```
 
-**Step-by-step rationale**
+**Switches**
 
-| Step | Why |
+| Token | Meaning |
 |---|---|
-| `cd /var/log` | Move to where the action is |
-| `pwd` | Confirm — never trust without verifying |
-| `ls -ltrh \| tail -3` | Long, time-sorted, reversed (newest last), human sizes — last 3 lines = 3 newest files |
-| `ls -ld /var/log/messages` | Verify the specific file (metadata, not contents) |
-| `stat -c '%U %G %a %n' ...` | One-line owner/group/mode/name audit (preview of Lab 06) |
-| `cd -` | Toggle back to the previous directory |
-| Final `pwd` | Audit trail — proves the toggle worked |
-
-**Output decoded**
-
-| Line | What it tells you |
-|---|---|
-| First `/var/log` | You moved successfully |
-| Three `ls -ltrh` rows | The three most recently changed log files, biggest visible |
-| `ls -ld` row | `/var/log/messages` exists, root owns it, mode `600` |
-| `stat` row | Quick scan: owner = root, group = root, mode = 600, file = `/var/log/messages` |
-| Second `/home/ec2-user` | `cd -` succeeded |
-| Third `/home/ec2-user` | `pwd` confirmation |
+| `mkdir -p A/{B,C,D}` | Brace expansion creates A/B, A/C, A/D |
+| `ls -R` | Recursive listing |
+| `ls -ld DIR` | Long-list the directory itself, not its contents |
+| `cd -` | Bounce between `$PWD` and `$OLDPWD` |
 
 **Troubleshoot**
 
 | Symptom | Fix |
 |---|---|
-| `cd -` says `OLDPWD not set` | This was your first `cd` of the session — try again after another `cd` |
-| `ls: /var/log/messages: No such file` | On some distros it's `/var/log/syslog` — substitute accordingly |
+| `ls -R` printed too much | Pipe through `\| head -n 50` or run in a smaller directory |
+| `ls -ld` printed every file | You forgot the directory argument |
+| `cd -` complains "OLDPWD not set" | Do one regular `cd` first |
+| Brace expansion did not happen | You quoted it: `'{a,b,c}'` is literal; remove quotes |
+
+---
+
+### Task 6 — Capstone: RHCSA-realistic save-listing-and-return
+
+**Task statement:** *"From your home directory, change to `/etc/ssh`, list every file (including hidden) using `-la` sorted by modification time newest-first, save that listing to `/root/sshd-tree.txt`, then return to your prior working directory."*
+
+**Purpose:** Execute a real exam-style path navigation end-to-end, capture the artifact a grader would inspect, and prove you can return cleanly.
+
+```bash
+sudo -i
+
+START=$PWD
+cd /etc/ssh
+
+ls -lat > /root/sshd-tree.txt
+
+wc -l /root/sshd-tree.txt
+head -n 5 /root/sshd-tree.txt
+cd "$START"
+pwd
+
+# alternative one-liner without env var (uses cd - to bounce back):
+cd /etc/ssh
+ls -lat > /root/sshd-tree.txt
+cd -
+
+test -s /root/sshd-tree.txt && echo "VERIFY: file exists and is non-empty"
+grep -c '^-' /root/sshd-tree.txt
+grep -c '^d' /root/sshd-tree.txt
+```
+
+**Human-Readable Breakdown:** Become root, save the starting directory in a shell variable, `cd` to `/etc/ssh`, capture the `-lat` listing into `/root/sshd-tree.txt`, return to the starting directory. The verification block confirms the file is non-empty, counts regular files and directories, and prints the head for a sanity check.
+
+**Layer stack you built:**
+
+```text
+/root/sshd-tree.txt
+   │
+   ├── ls -lat output from /etc/ssh    ← captured by `>`
+   │     ├── . and .. entries          (hidden)
+   │     ├── sshd_config(.d), ssh_config(.d)
+   │     └── host key files (mode 0600, root-owned)
+   └── one line per file               ← grep -c to count file types
+```
+
+**The story:** This is the **canonical 60-second exam answer.** Memorize the spine: `START=$PWD → cd /target/path → ls -OPTS > /save/path → cd "$START"`. Either `cd -` or a saved env variable returns you home. Either is acceptable on the exam — the file content is what graders check.
+
+**Expected verification output:**
+
+```text
+6 /root/sshd-tree.txt
+total 192
+drwxr-xr-x.  4 root root   175 May 21 14:33 .
+drwxr-xr-x. 89 root root  8192 May 26 12:48 ..
+-rw-------.  1 root root  4434 May 21 14:33 sshd_config
+-rw-------.  1 root root   513 May 21 14:33 ssh_host_ed25519_key
+/home/ec2-user
+/etc/ssh
+VERIFY: file exists and is non-empty
+4
+2
+```
+
+**Cleanup**
+
+```bash
+rm -rf /tmp/nav-lab
+rm -f /root/sshd-tree.txt
+exit
+```
+
+**Troubleshoot**
+
+| Symptom | Fix |
+|---|---|
+| Listing is missing hidden files | Add `-a` to the `ls` flags |
+| Listing is alphabetic, not by time | Add `-t` |
+| You cannot return to start dir | Re-run with `START=$PWD` saved at the top |
+| Wrote the listing to `/etc/ssh/...` | The `>` destination must be `/root/sshd-tree.txt`, not a relative path |
 
 ---
 
 ## 🔍 Navigation Decision Guide
 
 ```
-Where am I?               → pwd          (add -P to resolve symlinks)
-What's here?              → ls
-What's REALLY here?       → ls -a
-What does this look like? → ls -l        (add -h for sizes, -d for dir itself)
-What changed recently?    → ls -ltrh
-What's the biggest?       → ls -lhS
-Inode for link debugging? → ls -li
-One per line for scripts? → ls -1A
-
-How do I move?
-  ├── Full path known       → cd /absolute/path
-  ├── Nearby                → cd relative/path
-  ├── Up one level          → cd ..
-  ├── Home                  → cd ~  or  cd  or  cd $HOME
-  └── Back where I was      → cd -
+Need to move around the filesystem?
+  │
+  ├── "Where am I right now?"
+  │       └── ✅ pwd
+  │
+  ├── "What's in here?"
+  │       └── ✅ ls            (bare)
+  │       └── ✅ ls -la        (everything, with metadata)
+  │       └── ✅ ls -ltr       (sorted by time, newest at bottom — find what changed)
+  │
+  ├── "Go to a specific known path"
+  │       └── ✅ cd /etc/ssh
+  │
+  ├── "Go home"
+  │       └── ✅ cd            (or cd ~)
+  │
+  ├── "Go up"
+  │       └── ✅ cd ..         (one level)
+  │       └── ✅ cd ../..      (two levels)
+  │
+  ├── "Bounce between two directories"
+  │       └── ✅ cd -          (toggles with $OLDPWD)
+  │
+  ├── "Save current location so I can return later"
+  │       └── ✅ START=$PWD; cd /elsewhere; ...; cd "$START"
+  │
+  ├── "Show me the directory ITSELF, not what's in it"
+  │       └── ✅ ls -ld DIR
+  │
+  └── "Where is this file actually?"
+          └── ✅ realpath FILE  (resolves all symlinks)
 ```
 
 ---
 
-## ✅ Lab Checklist (20 Tasks)
+## ✅ Lab Checklist (6 Tasks)
 
-- [ ] 01 `pwd` prints the working directory
-- [ ] 02 `pwd -P` resolves symlinks
-- [ ] 03 `cd /etc` with absolute path
-- [ ] 04 `cd ssh` with relative path
-- [ ] 05 `cd ..` and chained parents
-- [ ] 06 `cd`, `cd ~`, `cd $HOME` all go home
-- [ ] 07 `cd -` toggles to previous directory
-- [ ] 08 `cd ~user` references another user's home
-- [ ] 09 Plain `ls` shows visible files only
-- [ ] 10 `ls -a` reveals dotfiles
-- [ ] 11 `ls -A` skips `.` and `..`
-- [ ] 12 `ls -l` long listing — every column decoded
-- [ ] 13 `ls -lh` human-readable sizes
-- [ ] 14 `ls -ld` for directory metadata
-- [ ] 15 `ls -ltr` for newest at the bottom
-- [ ] 16 `ls -lhS` for largest first
-- [ ] 17 `ls -R` recursive (scoped)
-- [ ] 18 `ls -1F` for scripts and visual classification
-- [ ] 19 `ls -li` for inode numbers
-- [ ] 20 Exam combo: navigate, list, verify, return
+- [ ] 01 Orient with `whoami`, `pwd`, `$HOME`, `ls /`, and the FHS top-level
+- [ ] 02 Practice absolute paths: `cd /`, `cd /etc/ssh`, `cd /var/log`, with `ls -ltr` to spot recent changes
+- [ ] 03 Practice relative paths and tokens: `..`, `.`, `~`, `cd -`, brace expansion in `mkdir -p`
+- [ ] 04 Read `ls -l`/`-la`/`-lh`/`-lt`/`-ltr` until each field is obvious at a glance
+- [ ] 05 Walk subtrees with `ls -R`, inspect dirs with `ls -ld`, ping-pong with `cd -`
+- [ ] 06 Execute the RHCSA capstone — save `/etc/ssh`'s `-lat` listing to `/root/sshd-tree.txt` and return to the starting directory
 
 ---
 
@@ -1005,40 +669,35 @@ How do I move?
 
 | Mistake | Symptom | Fix |
 |---|---|---|
-| Forgetting the leading `/` on absolute paths | `cd: etc: No such file or directory` | Add `/`: `cd /etc` |
-| Typing `cd ~/etc` | `No such file or directory` | `/etc` is system, not in your home — drop the `~` |
-| Running `ls -R /` | Terminal hangs for minutes | Always scope: `ls -R /specific/path` |
-| Confusing `-a` and `-A` | Scripts process `.` and `..` accidentally | Humans use `-a`, scripts use `-A` |
-| Stacking too many `..` | End up at `/` and lost | `pwd` after every `cd` until comfortable |
-| Forgetting `-d` for a directory's own metadata | Floods screen with contents | `ls -ld /path` |
-| `cd file.txt` on a regular file | `cd: Not a directory` | Use `cat`/`less` to read files |
+| `cd` with no argument expected to do nothing | Lands in `$HOME` | Empty `cd` is `cd ~` by design |
+| `cd ..` typed twice as `cd .. ..` | "too many arguments" | One `cd` per argument |
+| Used relative path in a script | Breaks when run from a different `cwd` | Use absolute paths or anchor on `$BASH_SOURCE` |
+| `ls` does not show hidden files | Forgot `-a` | `ls -la` |
+| Sort feels random | Default is alphabetical | Add `-t` for time |
+| `ls -l` of a directory dumps its contents | That's the default | Add `-d` to see only the directory itself |
+| `pwd` shows a symlink path | That is logical (`-L`) pwd | Use `pwd -P` to resolve symlinks |
+| `cd -` says OLDPWD not set | First-ever `cd` | Do another `cd` first |
+| Brace expansion is treated as a literal | Quoted | Remove quotes around `{a,b,c}` |
+| `ls -R /` runs forever | Too much output | Limit with `\| head` or narrow the path |
 
 ---
 
-## 📌 Exam Strategy
+## 🎯 Career & Interview Strategy
 
-**RHCSA EX200**
-- Always start a task with `pwd && ls -la` to confirm context.
-- Use **absolute paths** when the task statement provides one.
-- `ls -ld /path` is your one-line verification for any "create directory with these permissions" task.
+**RHCSA candidate**
+- Train the muscle memory: `pwd; ls -la` on entering every directory. Use `cd -` to ping-pong between the exam task's working directory and `/etc/foo`.
 
-**RHCE EX294 (Ansible)**
-- Playbook paths are relative to the **playbook file**, not your shell's `pwd`.
-- Inventory files commonly live at `/etc/ansible/hosts` or `./inventory` — confirm with `ls -la`.
+**RHCE candidate**
+- Ansible inventory and role paths matter. `ansible-playbook` resolves paths relative to the playbook directory — `pwd` discipline avoids "file not found" errors during graded tasks.
 
-**CKA**
-- Memorize and `cd` to these without thinking:
-  - `/etc/kubernetes/manifests` (static pods)
-  - `/etc/kubernetes/pki` (certs)
-  - `/var/lib/kubelet` (kubelet state)
-  - `/var/log/pods` (container logs)
-  - `/etc/cni/net.d` (CNI config)
-- `cd -` saves real seconds when bouncing between manifests and logs.
+**SRE / Platform interview**
+- "How would you find out what just changed in `/var/log`?" → `cd /var/log && ls -ltr | tail`. The newest mtime is at the bottom.
 
-**RHCA**
-- RH342 (Troubleshooting): `ls -ltr /var/log` is the universal first move.
-- RH358 (Services): each service has a config directory; muscle-memory paths win.
-- RH236 (GlusterFS): bricks live under `/var/lib/glusterd` and `/data/...` paths.
+**DevOps**
+- CI scripts that `cd` into a build directory should also `cd -` (or restore `$START`) before exiting, so subsequent steps run in the expected directory.
+
+**AI / MLOps**
+- Experiment scripts standardize on `cd $EXPDIR; ls -lt runs/ | head`. Find your most recent training run in one second.
 
 ---
 
@@ -1046,15 +705,15 @@ How do I move?
 
 | Lab | Connection |
 |---|---|
-| Lab 06 — `ls -l`, `ls -Z` | Decodes the long listing in depth |
-| Lab 07 — `touch` | Creates files you'll then list with `ls` |
-| Lab 08 — `cp` | Requires absolute/relative path mastery |
-| Lab 10 — `mv` | Same path rules apply to renames and moves |
-| Lab 11 — `rm` | Wrong directory + `rm -rf` = disaster — `pwd` first |
+| Lab 06 — Listing Files and SELinux Contexts | The `-Z` extension to `ls` |
+| Lab 08 — Copying Files and Directories | First job after navigating: copy |
+| Lab 12 — Creating Nested Directories | The `mkdir -p` primitive used here |
+| Lab 14 — File Searching with `find` | When you do not know the path yet |
+| Lab 15 — Instant File Searching with `locate` | The pre-indexed alternative to `find` |
 
 ---
 
 ## 👤 Author
 
-**Kelvin R. Tobias**  
+**Kelvin R. Tobias**
 [kelvinintech.com](https://kelvinintech.com) · [GitHub](https://github.com/kelvintechnical) · [LinkedIn](https://www.linkedin.com/in/kelvin-r-tobias-211949219)
